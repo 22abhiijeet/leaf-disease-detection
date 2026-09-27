@@ -3,12 +3,16 @@ import base64
 import sys
 from pathlib import Path
 
-# Add Leaf Disease directory to path
-sys.path.insert(0, str(Path(__file__).parent / "Leaf Disease"))
+# Robust path resolution for Leaf Disease folder
+current_dir = Path(__file__).resolve().parent
+leaf_disease_path = current_dir / "Leaf Disease"
+if str(leaf_disease_path) not in sys.path:
+    sys.path.insert(0, str(leaf_disease_path))
+
 try:
     from main import LeafDiseaseDetector
-except ImportError:
-    pass
+except ImportError as e:
+    st.error(f"Critical Error: Could not import LeafDiseaseDetector - {e}")
 
 st.set_page_config(page_title="Leaf Disease Detection", layout="wide", initial_sidebar_state="collapsed")
 
