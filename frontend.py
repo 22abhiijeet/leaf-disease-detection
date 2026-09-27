@@ -1,18 +1,27 @@
 import streamlit as st
 import base64
 import sys
+import importlib.util
 from pathlib import Path
 
-# Robust path resolution for Leaf Disease folder
+# Setup exact absolute paths to prevent any module not found or import conflicts
 current_dir = Path(__file__).resolve().parent
-leaf_disease_path = current_dir / "Leaf Disease"
-if str(leaf_disease_path) not in sys.path:
-    sys.path.insert(0, str(leaf_disease_path))
+leaf_disease_dir = current_dir / "Leaf Disease"
 
+if str(leaf_disease_dir) not in sys.path:
+    sys.path.insert(0, str(leaf_disease_dir))
+
+# Explicitly load Leaf Disease/main.py avoiding root namespace pollution
 try:
-    from main import LeafDiseaseDetector
-except ImportError as e:
-    st.error(f"Critical Error: Could not import LeafDiseaseDetector - {e}")
+    main_path = leaf_disease_dir / "main.py"
+    spec = importlib.util.spec_from_file_location("leaf_main", str(main_path))
+    leaf_main_module = importlib.util.module_from_spec(spec)
+    sys.modules["leaf_main"] = leaf_main_module
+    spec.loader.exec_module(leaf_main_module)
+    LeafDiseaseDetector = leaf_main_module.LeafDiseaseDetector
+except Exception as e:
+    st.error(f"Critical Error loading detector module: {e}")
+    LeafDiseaseDetector = None
 
 st.set_page_config(page_title="Leaf Disease Detection", layout="wide", initial_sidebar_state="collapsed")
 
@@ -43,33 +52,36 @@ with col1:
 
 with col2:
     if uploaded_file and st.button("🔍 Detect Disease", use_container_width=True):
-        with st.spinner("Analyzing image using Groq AI..."):
-            try:
-                base64_str = base64.b64encode(uploaded_file.getvalue()).decode('utf-8')
-                detector = LeafDiseaseDetector()
-                res = detector.analyze_leaf_image_base64(base64_str)
+        if LeafDiseaseDetector is None:
+            st.error("LeafDiseaseDetector could not be initialized due to import configuration.")
+        else:
+            with st.spinner("Analyzing image using Groq AI..."):
+                try:
+                    base64_str = base64.b64encode(uploaded_file.getvalue()).decode('utf-8')
+                    detector = LeafDiseaseDetector()
+                    res = detector.analyze_leaf_image_base64(base64_str)
 
-                if res:
-                    st.markdown("<div class='result-card'>", unsafe_allow_html=True)
-                    if res.get("disease_type") == "invalid_image":
-                        st.markdown("<div class='disease-title'>⚠️ Invalid Image</div>", unsafe_allow_html=True)
-                        st.write("Please upload a clear plant leaf image.")
-                    elif res.get("disease_detected"):
-                        st.markdown(f"<div class='disease-title'>🦠 {res.get('disease_name', 'N/A')}</div>", unsafe_allow_html=True)
-                        st.markdown(f"<span class='info-badge'>Type: {res.get('disease_type', 'N/A')}</span>", unsafe_allow_html=True)
-                        st.markdown(f"<span class='info-badge'>Severity: {res.get('severity', 'N/A')}</span>", unsafe_allow_html=True)
-                        st.markdown(f"<span class='info-badge'>Confidence: {res.get('confidence', 'N/A')}%</span>", unsafe_allow_html=True)
-                        
-                        st.markdown("<div class='section-title'>Symptoms</div>", unsafe_allow_html=True)
-                        st.markdown("<ul>" + "".join([f"<li>{s}</li>" for s in res.get("symptoms", [])]) + "</ul>", unsafe_allow_html=True)
-                        
-                        st.markdown("<div class='section-title'>Treatment</div>", unsafe_allow_html=True)
-                        st.markdown("<ul>" + "".join([f"<li>{t}</li>" for t in res.get("treatment", [])]) + "</ul>", unsafe_allow_html=True)
+                    if res:
+                        st.markdown("<div class='result-card'>", unsafe_allow_html=True)
+                        if res.get("disease_type") == "invalid_image":
+                            st.markdown("<div class='disease-title'>⚠️ Invalid Image</div>", unsafe_allow_html=True)
+                            st.write("Please upload a clear plant leaf image.")
+                        elif res.get("disease_detected"):
+                            st.markdown(f"<div class='disease-title'>🦠 {res.get('disease_name', 'N/A')}</div>", unsafe_allow_html=True)
+                            st.markdown(f"<span class='info-badge'>Type: {res.get('disease_type', 'N/A')}</span>", unsafe_allow_html=True)
+                            st.markdown(f"<span class='info-badge'>Severity: {res.get('severity', 'N/A')}</span>", unsafe_allow_html=True)
+                            st.markdown(f"<span class='info-badge'>Confidence: {res.get('confidence', 'N/A')}%</span>", unsafe_allow_html=True)
+                            
+                            st.markdown("<div class='section-title'>Symptoms</div>", unsafe_allow_html=True)
+                            st.markdown("<ul>" + "".join([f"<li>{s}</li>" for s in res.get("symptoms", [])]) + "</ul>", unsafe_allow_html=True)
+                            
+                            st.markdown("<div class='section-title'>Treatment</div>", unsafe_allow_html=True)
+                            st.markdown("<ul>" + "".join([f"<li>{t}</li>" for t in res.get("treatment", [])]) + "</ul>", unsafe_allow_html=True)
+                        else:
+                            st.markdown("<div class='disease-title'>✅ Healthy Leaf</div>", unsafe_allow_html=True)
+                            st.write("No disease detected!")
+                        st.markdown("</div>", unsafe_allow_html=True)
                     else:
-                        st.markdown("<div class='disease-title'>✅ Healthy Leaf</div>", unsafe_allow_html=True)
-                        st.write("No disease detected!")
-                    st.markdown("</div>", unsafe_allow_html=True)
-                else:
-                    st.error("Failed to analyze image.")
-            except Exception as e:
-                st.error(f"Error: {str(e)}")
+                        st.error("Failed to analyze image.")
+                except Exception as e:
+                    st.error(f"Error during analysis: {str(e)}")
