@@ -1,333 +1,165 @@
-import os
-import json
-import logging
+import streamlit as st
+import requests
+import base64
 import sys
-from typing import Dict, Optional, List
-from dataclasses import dataclass
-from datetime import datetime
+from pathlib import Path
 
-from groq import Groq
-from dotenv import load_dotenv
+# Add Leaf Disease directory to path
+sys.path.insert(0, str(Path(__file__).parent / "Leaf Disease"))
+try:
+    from main import LeafDiseaseDetector
+except ImportError:
+    from utils import LeafDiseaseDetector
 
+# Set Streamlit theme to light and wide mode
+st.set_page_config(
+    page_title="Leaf Disease Detection",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
 
-# Configure logging
-logging.basicConfig(level=logging.INFO,
-                    format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+# Enhanced modern CSS
+st.markdown("""
+    <style>
+    .stApp {
+        background: linear-gradient(135deg, #e3f2fd 0%, #f7f9fa 100%);
+    }
+    .result-card {
+        background: rgba(255,255,255,0.95);
+        border-radius: 18px;
+        box-shadow: 0 4px 24px rgba(44,62,80,0.10);
+        padding: 2.5em 2em;
+        margin-top: 1.5em;
+        margin-bottom: 1.5em;
+        transition: box-shadow 0.3s;
+    }
+    .result-card:hover {
+        box-shadow: 0 8px 32px rgba(44,62,80,0.18);
+    }
+    .disease-title {
+        color: #1b5e20;
+        font-size: 2.2em;
+        font-weight: 700;
+        margin-bottom: 0.5em;
+        letter-spacing: 1px;
+        text-shadow: 0 2px 8px #e0e0e0;
+    }
+    .section-title {
+        color: #1976d2;
+        font-size: 1.25em;
+        margin-top: 1.2em;
+        margin-bottom: 0.5em;
+        font-weight: 600;
+        letter-spacing: 0.5px;
+    }
+    .timestamp {
+        color: #616161;
+        font-size: 0.95em;
+        margin-top: 1.2em;
+        text-align: right;
+    }
+    .info-badge {
+        display: inline-block;
+        background: #e3f2fd;
+        color: #1976d2;
+        border-radius: 8px;
+        padding: 0.3em 0.8em;
+        font-size: 1em;
+        margin-right: 0.5em;
+        margin-bottom: 0.3em;
+    }
+    .symptom-list, .cause-list, .treatment-list {
+        margin-left: 1em;
+        margin-bottom: 0.5em;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
+st.markdown("""
+    <div style='text-align: center; margin-top: 1em;'>
+        <span style='font-size:2.5em;'>🌿</span>
+        <h1 style='color: #1565c0; margin-bottom:0;'>Leaf Disease Detection</h1>
+        <p style='color: #616161; font-size:1.15em;'>Upload a leaf image to detect diseases and get expert recommendations.</p>
+    </div>
+""", unsafe_allow_html=True)
 
-@dataclass
-class DiseaseAnalysisResult:
-    """
-    Data class for storing comprehensive disease analysis results.
+col1, col2 = st.columns([1, 2])
+with col1:
+    uploaded_file = st.file_uploader(
+        "Upload Leaf Image", type=["jpg", "jpeg", "png"])
+    if uploaded_file is not None:
+        st.image(uploaded_file, caption="Preview")
 
-    This class encapsulates all the information returned from a leaf disease
-    analysis, including detection status, disease identification, severity
-    assessment, and treatment recommendations.
-
-    Attributes:
-        disease_detected (bool): Whether a disease was detected in the leaf image
-        disease_name (Optional[str]): Name of the identified disease, None if healthy
-        disease_type (str): Category of disease (fungal, bacterial, viral, pest, etc.)
-    """
-    disease_detected: bool
-    disease_name: Optional[str]
-    disease_type: str
-    severity: str
-    confidence: float
-    symptoms: List[str]
-    possible_causes: List[str]
-    treatment: List[str]
-    analysis_timestamp: str = datetime.now().astimezone().isoformat()
-
-
-class LeafDiseaseDetector:
-    """
-    Advanced Leaf Disease Detection System using AI Vision Analysis.
-
-    This class provides comprehensive leaf disease detection capabilities using
-    the Groq API with Llama Vision models. It can analyze leaf images to identify
-    diseases, assess severity, and provide treatment recommendations. The system
-    also validates that uploaded images contain actual plant leaves and rejects
-    images of humans, animals, or other non-plant objects.
-
-    The system supports base64 encoded images and returns structured JSON results
-    containing disease information, confidence scores, symptoms, causes, and
-    treatment suggestions.
-
-    Features:
-        - Image validation (ensures uploaded images contain plant leaves)
-        - Multi-disease detection (fungal, bacterial, viral, pest, nutrient deficiency)
-        - Severity assessment (mild, moderate, severe)
-        - Confidence scoring (0-100%)
-        - Symptom identification
-        - Treatment recommendations
-        - Robust error handling and response parsing
-        - Invalid image type detection and rejection
-
-    Attributes:
-        MODEL_NAME (str): The AI model used for analysis
-        DEFAULT_TEMPERATURE (float): Default temperature for response generation
-        DEFAULT_MAX_TOKENS (int): Default maximum tokens for responses
-        api_key (str): Groq API key for authentication
-        client (Groq): Groq API client instance
-
-    Example:
-        >>> detector = LeafDiseaseDetector()
-        >>> result = detector.analyze_leaf_image_base64(base64_image_data)
-        >>> if result['disease_type'] == 'invalid_image':
-        ...     print("Please upload a plant leaf image")
-        >>> elif result['disease_detected']:
-        ...     print(f"Disease detected: {result['disease_name']}")
-        >>> else:
-        ...     print("Healthy leaf detected")
-    """
-
-    MODEL_NAME = "meta-llama/llama-4-scout-17b-16e-instruct"
-    DEFAULT_TEMPERATURE = 0.3
-    DEFAULT_MAX_TOKENS = 1024
-
-    def __init__(self, api_key: Optional[str] = None):
-        """
-        Initialize the Leaf Disease Detector with API credentials.
-
-        Sets up the Groq API client and validates the API key from either
-        the parameter or environment variables. Initializes logging for
-        tracking analysis operations.
-
-        Args:
-            api_key (Optional[str]): Groq API key. If None, will attempt to
-                                   load from GROQ_API_KEY environment variable.
-
-        Raises:
-            ValueError: If no valid API key is found in parameters or environment.
-
-        Note:
-            Ensure your .env file contains GROQ_API_KEY or pass it directly.
-        """
-        load_dotenv()
-        self.api_key = api_key or os.environ.get("GROQ_API_KEY")
-        if not self.api_key:
-            raise ValueError("GROQ_API_KEY not found in environment variables")
-        self.client = Groq(api_key=self.api_key)
-        logger.info("Leaf Disease Detector initialized")
-
-    def create_analysis_prompt(self) -> str:
-        """
-        Create the standardized analysis prompt for the AI model.
-
-        Generates a comprehensive prompt that instructs the AI model to analyze
-        leaf images for diseases and return structured JSON results. The prompt
-        specifies the required output format and analysis criteria.
-
-        Returns:
-            str: Formatted prompt string with instructions for disease analysis
-                 and JSON schema specification.
-
-        Note:
-            The prompt ensures consistent output formatting across all analyses
-            and includes all necessary fields for comprehensive disease assessment.
-        """
-        return """IMPORTANT: First determine if this image contains a plant leaf or vegetation. If the image shows humans, animals, objects, buildings, or anything other than plant leaves/vegetation, return the "invalid_image" response format below.
-
-        If this is a valid leaf/plant image, analyze it for diseases and return the results in JSON format.
-        
-        Please identify:
-        1. Whether this is actually a leaf/plant image
-        2. Disease name (if any)
-        3. Disease type/category or invalid_image
-        4. Severity level (mild, moderate, severe)
-        5. Confidence score (0-100%)
-        6. Symptoms observed
-        7. Possible causes
-        8. Treatment recommendations
-
-        For NON-LEAF images (humans, animals, objects, or not detected as leaves, etc.), return this format:
-        {
-            "disease_detected": false,
-            "disease_name": null,
-            "disease_type": "invalid_image",
-            "severity": "none",
-            "confidence": 95,
-            "symptoms": ["This image does not contain a plant leaf"],
-            "possible_causes": ["Invalid image type uploaded"],
-            "treatment": ["Please upload an image of a plant leaf for disease analysis"]
-        }
-        
-        For VALID LEAF images, return this format:
-        {
-            "disease_detected": true/false,
-            "disease_name": "name of disease or null",
-            "disease_type": "fungal/bacterial/viral/pest/nutrient deficiency/healthy",
-            "severity": "mild/moderate/severe/none",
-            "confidence": 85,
-            "symptoms": ["list", "of", "symptoms"],
-            "possible_causes": ["list", "of", "causes"],
-            "treatment": ["list", "of", "treatments"]
-        }"""
-
-    def analyze_leaf_image_base64(self, base64_image: str,
-                                  temperature: float = None,
-                                  max_tokens: int = None) -> Dict:
-        """
-        Analyze base64 encoded image data for leaf diseases and return JSON result.
-
-        First validates that the image contains a plant leaf. If the image shows
-        humans, animals, objects, or other non-plant content, returns an 
-        'invalid_image' response. For valid leaf images, performs disease analysis.
-
-        Args:
-            base64_image (str): Base64 encoded image data (without data:image prefix)
-            temperature (float, optional): Model temperature for response generation
-            max_tokens (int, optional): Maximum tokens for response
-
-        Returns:
-            Dict: Analysis results as dictionary (JSON serializable)
-                 - For invalid images: disease_type will be 'invalid_image'
-                 - For valid leaves: standard disease analysis results
-
-        Raises:
-            Exception: If analysis fails
-        """
-        try:
-            logger.info("Starting analysis for base64 image data")
-
-            # Validate base64 input
-            if not isinstance(base64_image, str):
-                raise ValueError("base64_image must be a string")
-
-            if not base64_image:
-                raise ValueError("base64_image cannot be empty")
-
-            # Clean base64 string (remove data URL prefix if present)
-            if base64_image.startswith('data:'):
-                base64_image = base64_image.split(',', 1)[1]
-
-            # Prepare request parameters
-            temperature = temperature or self.DEFAULT_TEMPERATURE
-            max_tokens = max_tokens or self.DEFAULT_MAX_TOKENS
-
-            # Make API request
-            completion = self.client.chat.completions.create(
-                model=self.MODEL_NAME,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": self.create_analysis_prompt()
-                            },
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/jpeg;base64,{base64_image}"
-                                }
-                            }
-                        ]
-                    }
-                ],
-                temperature=temperature,
-                max_completion_tokens=max_tokens,
-                top_p=1,
-                stream=False,
-                stop=None,
-            )
-
-            logger.info("API request completed successfully")
-            result = self._parse_response(
-                completion.choices[0].message.content)
-
-            # Return as dictionary for JSON serialization
-            return result.__dict__
-
-        except Exception as e:
-            logger.error(f"Analysis failed for base64 image data: {str(e)}")
-            raise
-
-    def _parse_response(self, response_content: str) -> DiseaseAnalysisResult:
-        """
-        Parse and validate API response
-
-        Args:
-            response_content (str): Raw response from API
-
-        Returns:
-            DiseaseAnalysisResult: Parsed and validated results
-        """
-        try:
-            # Clean up response - remove markdown code blocks if present
-            cleaned_response = response_content.strip()
-            if cleaned_response.startswith('```json'):
-                cleaned_response = cleaned_response.replace(
-                    '```json', '').replace('```', '').strip()
-            elif cleaned_response.startswith('```'):
-                cleaned_response = cleaned_response.replace('```', '').strip()
-
-            # Parse JSON
-            disease_data = json.loads(cleaned_response)
-            logger.info("Response parsed successfully as JSON")
-
-            # Validate required fields and create result object
-            return DiseaseAnalysisResult(
-                disease_detected=bool(
-                    disease_data.get('disease_detected', False)),
-                disease_name=disease_data.get('disease_name'),
-                disease_type=disease_data.get('disease_type', 'unknown'),
-                severity=disease_data.get('severity', 'unknown'),
-                confidence=float(disease_data.get('confidence', 0)),
-                symptoms=disease_data.get('symptoms', []),
-                possible_causes=disease_data.get('possible_causes', []),
-                treatment=disease_data.get('treatment', [])
-            )
-
-        except json.JSONDecodeError:
-            logger.warning(
-                "Failed to parse as JSON, attempting to extract JSON from response")
-
-            # Try to find JSON in the response using regex
-            import re
-            json_match = re.search(r'\{.*\}', response_content, re.DOTALL)
-            if json_match:
+with col2:
+    if uploaded_file is not None:
+        if st.button("🔍 Detect Disease", use_container_width=True):
+            with st.spinner("Analyzing image and contacting Groq AI..."):
                 try:
-                    disease_data = json.loads(json_match.group())
-                    logger.info("JSON extracted and parsed successfully")
+                    image_bytes = uploaded_file.getvalue()
+                    base64_string = base64.b64encode(image_bytes).decode('utf-8')
+                    
+                    detector = LeafDiseaseDetector()
+                    result = detector.analyze_leaf_image_base64(base64_string)
 
-                    return DiseaseAnalysisResult(
-                        disease_detected=bool(
-                            disease_data.get('disease_detected', False)),
-                        disease_name=disease_data.get('disease_name'),
-                        disease_type=disease_data.get(
-                            'disease_type', 'unknown'),
-                        severity=disease_data.get('severity', 'unknown'),
-                        confidence=float(disease_data.get('confidence', 0)),
-                        symptoms=disease_data.get('symptoms', []),
-                        possible_causes=disease_data.get(
-                            'possible_causes', []),
-                        treatment=disease_data.get('treatment', [])
-                    )
-                except json.JSONDecodeError:
-                    pass
+                    if result:
+                        # Check if it's an invalid image
+                        if result.get("disease_type") == "invalid_image":
+                            st.markdown("<div class='result-card'>", unsafe_allow_html=True)
+                            st.markdown("<div class='disease-title'>⚠️ Invalid Image</div>", unsafe_allow_html=True)
+                            st.markdown("<div style='color: #ff5722; font-size: 1.1em; margin-bottom: 1em;'>Please upload a clear image of a plant leaf for accurate disease detection.</div>", unsafe_allow_html=True)
 
-            # If all parsing attempts fail, log the raw response and raise error
-            logger.error(
-                f"Could not parse response as JSON. Raw response: {response_content}")
-            raise ValueError(
-                f"Unable to parse API response as JSON: {response_content[:200]}...")
+                            if result.get("symptoms"):
+                                st.markdown("<div class='section-title'>Issue</div>", unsafe_allow_html=True)
+                                st.markdown("<ul class='symptom-list'>", unsafe_allow_html=True)
+                                for symptom in result.get("symptoms", []):
+                                    st.markdown(f"<li>{symptom}</li>", unsafe_allow_html=True)
+                                st.markdown("</ul>", unsafe_allow_html=True)
 
+                            if result.get("treatment"):
+                                st.markdown("<div class='section-title'>What to do</div>", unsafe_allow_html=True)
+                                st.markdown("<ul class='treatment-list'>", unsafe_allow_html=True)
+                                for treat in result.get("treatment", []):
+                                    st.markdown(f"<li>{treat}</li>", unsafe_allow_html=True)
+                                st.markdown("</ul>", unsafe_allow_html=True)
 
-def main():
-    """Main execution function for testing"""
-    try:
-        # Example usage
-        detector = LeafDiseaseDetector()
-        print("Leaf Disease Detector (minimal version) initialized successfully!")
-        print("Use analyze_leaf_image_base64() method with base64 image data.")
+                            st.markdown("</div>", unsafe_allow_html=True)
 
-    except Exception as e:
-        print(f"Error: {str(e)}")
-        sys.exit(1)
+                        elif result.get("disease_detected"):
+                            st.markdown("<div class='result-card'>", unsafe_allow_html=True)
+                            st.markdown(f"<div class='disease-title'>🦠 {result.get('disease_name', 'N/A')}</div>", unsafe_allow_html=True)
+                            st.markdown(f"<span class='info-badge'>Type: {result.get('disease_type', 'N/A')}</span>", unsafe_allow_html=True)
+                            st.markdown(f"<span class='info-badge'>Severity: {result.get('severity', 'N/A')}</span>", unsafe_allow_html=True)
+                            st.markdown(f"<span class='info-badge'>Confidence: {result.get('confidence', 'N/A')}%</span>", unsafe_allow_html=True)
+                            
+                            st.markdown("<div class='section-title'>Symptoms</div>", unsafe_allow_html=True)
+                            st.markdown("<ul class='symptom-list'>", unsafe_allow_html=True)
+                            for symptom in result.get("symptoms", []):
+                                st.markdown(f"<li>{symptom}</li>", unsafe_allow_html=True)
+                            st.markdown("</ul>", unsafe_allow_html=True)
 
+                            st.markdown("<div class='section-title'>Possible Causes</div>", unsafe_allow_html=True)
+                            st.markdown("<ul class='cause-list'>", unsafe_allow_html=True)
+                            for cause in result.get("possible_causes", []):
+                                st.markdown(f"<li>{cause}</li>", unsafe_allow_html=True)
+                            st.markdown("</ul>", unsafe_allow_html=True)
 
-if __name__ == "__main__":
-    main()
+                            st.markdown("<div class='section-title'>Treatment</div>", unsafe_allow_html=True)
+                            st.markdown("<ul class='treatment-list'>", unsafe_allow_html=True)
+                            for treat in result.get("treatment", []):
+                                st.markdown(f"<li>{treat}</li>", unsafe_allow_html=True)
+                            st.markdown("</ul>", unsafe_allow_html=True)
+
+                            st.markdown(f"<div class='timestamp'>🕒 {result.get('analysis_timestamp', 'N/A')}</div>", unsafe_allow_html=True)
+                            st.markdown("</div>", unsafe_allow_html=True)
+                        else:
+                            st.markdown("<div class='result-card'>", unsafe_allow_html=True)
+                            st.markdown("<div class='disease-title'>✅ Healthy Leaf</div>", unsafe_allow_html=True)
+                            st.markdown("<div style='color: #4caf50; font-size: 1.1em; margin-bottom: 1em;'>No disease detected in this leaf. The plant appears to be healthy!</div>", unsafe_allow_html=True)
+                            st.markdown(f"<span class='info-badge'>Status: {result.get('disease_type', 'healthy')}</span>", unsafe_allow_html=True)
+                            st.markdown(f"<span class='info-badge'>Confidence: {result.get('confidence', 'N/A')}%</span>", unsafe_allow_html=True)
+                            st.markdown(f"<div class='timestamp'>🕒 {result.get('analysis_timestamp', 'N/A')}</div>", unsafe_allow_html=True)
+                            st.markdown("</div>", unsafe_allow_html=True)
+                    else:
+                        st.error("Failed to analyze image.")
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
